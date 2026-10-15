@@ -32,6 +32,28 @@ kendisi yazarak çözmeyi hedefliyor.
 | ⚠️ **Dürüst raporlama** | Gemini kotası dolarsa, repo klonlanamazsa ya da tarayıcı açılmazsa sistem çökmez; **"Kısmi tarama — sonuçlar eksik olabilir"** der ve asla "güvenli" demez. |
 | 🎬 **Sahne modu** | İnternet ve yapay zeka gerektirmeden kayıtlı bir taramayı oynatır (sunum güvenliği). |
 
+### 🛡️ Güvenlik Tarayıcısı — ⚠️ geliştirme aşamasında (beta)
+
+> **Bu özellik henüz geliştirme aşamasındadır.** Sonuçlar bir güvenlik denetiminin yerini **tutmaz**; "bulgu yok"
+> demek "güvenli" demek değildir. Kaçırdığı açıklar ve yanlış alarmlar olabilir.
+
+Seçmeli ve **pasif** bir statik analizdir: yalnızca kaynak kodu okur, canlı sisteme istek veya saldırı yapmaz.
+
+- **Kural tabanlı tarama:** gömülü anahtarlar, `eval`, XSS, SQL/NoSQL enjeksiyonu, komut enjeksiyonu, açık yönlendirme,
+  zayıf TLS/CORS/özet algoritması, çerez bayrakları, eksik CSRF/helmet, commit'lenmiş `.env`/özel anahtar dosyaları.
+- **Bağımlılık kontrolü:** `package-lock.json` yalnızca paket adı + sürümle [OSV.dev](https://osv.dev)'e sorulur.
+- **Yapay zeka ikinci görüşü:** Gemini her bulguya çevresindeki koda bakarak *gerçek / yanlış alarm / emin değil* der.
+  Gizli değerler maskelenip gönderilir; yapay zeka bulgu **ekleyemez**, yalnızca yanlış alarm olarak işaretleyebilir.
+- **Etik ve yasal tasarım:** tarama için "kodun sahibiyim / iznim var" onayı gerekir. Repo sahibi `.canary-verify`
+  dosyasıyla sahipliğini kanıtlamadıkça rapor **kısıtlıdır** (dosya, satır, kod ve paket adı gösterilmez). Tarama kaydı
+  kod içermez, IP adresi tuzlanmış özet olarak tutulur ve 30 gün sonra silinir.
+- **Bilinen sınırlar:** satır satır kurallar veri akışını izlemez (örn. `const x = req.query.a; res.redirect(x)`
+  yakalanmaz); yalnızca JS/TS taranır; kural ölçümü kendi yazdığımız 67 testle yapılmıştır, gerçek dünya oranı değildir.
+- **Doğrulama:** [OWASP NodeGoat](https://github.com/OWASP/NodeGoat) üzerinde bilinen açıkların (eval, `$where`, açık
+  yönlendirme, gömülü sırlar) bulunduğu görüldü; Semgrep ile karşılaştırıldı ve ikisi birbirini tamamlıyor.
+
+Çalıştırmak için: `cd server && npm test` (kural testleri) ve tarama isteğinde `{ "security": true, "authorized": true }`.
+
 ### Gerçek sonuç: Synaptix (ekibimizin projesi)
 
 Türkiye Uyum Tarayıcısı, ekibimizin React projesi [Synaptix](https://github.com/emirhnnd/lumosity-brain-lab)'i

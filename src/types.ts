@@ -84,6 +84,7 @@ export type ScanEvent =
   | { type: 'step'; flowId: string; stepId: string; status: StepStatus; screenshot?: string; pageUrl?: string }
   | { type: 'test_result'; flowId: string; status: 'passed' | 'failed'; durationMs: number; failure?: Failure; healed?: Healing[] }
   | { type: 'tr_audit'; report: TrAuditReport }
+  | { type: 'sec_audit'; report: SecAuditReport }
   | { type: 'done'; summary: Summary };
 
 /* ---- Türkiye Uyum Tarayıcısı (Canary TR) ---- */
@@ -118,4 +119,28 @@ export interface Healing {
   reason: string;
   before: string;
   after: string;
+}
+
+/* ---- Güvenlik Tarayıcısı (pasif statik analiz) ---- */
+export interface SecAuditItem {
+  id: string;
+  severity: TrSeverity;
+  title: string;
+  cwe: string;
+  why: string;
+  fix: string;
+  count: number;
+  locations: { file: string; line: number; text: string; verdict?: 'real' | 'false_positive' | 'unsure'; reason?: string }[];
+}
+
+export interface SecAuditReport {
+  score: number;
+  filesScanned: number;
+  items: SecAuditItem[];
+  dependencies?: { name: string; version: string; ids: string[] }[];
+  aiReview?: { checked: number; falsePositives: number; model: string };
+  /** false = restricted report: the repo owner has not proved ownership */
+  verified: boolean;
+  verify?: { file: string; content: string };
+  dependencyCount?: number;
 }

@@ -4,6 +4,10 @@ import { geminiModel, hasGeminiKey } from './gemini.ts';
 import { cloneRepo, listAllSourceFiles, listSourceFiles, makeTempDir, readSource, removeDir, type SourceFile } from './repo.ts';
 import { auditHint, runTrAudit } from './trAudit.ts';
 import { describeActions, healStep } from './heal.ts';
+import { checkDependencies, restrictReport, runSecAudit } from './secAudit.ts';
+import { VERIFY_FILE, verifyToken } from './verify.ts';
+import { reviewFindings } from './secReview.ts';
+import { simpleGit } from 'simple-git';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import {
@@ -83,6 +87,46 @@ export async function runRealScan(ctx: ScanContext): Promise<void> {
         trHint = auditHint(report);
       } catch (e) {
         log('warn', `Türkiye uyum taraması yapılamadı (${errMsg(e)}).`);
+      }
+    }
+    checkAbort();
+
+    // ---------------- 2c. Güvenlik taraması (passive, static; only with authorization) ----------------
+    if (ctx.security && repoDir) {
+      try {
+        log('info', '🛡️ Güvenlik taraması (pasif): yalnızca kaynak kod okunuyor, canlı sisteme istek/saldırı yapılmıyor…');
+        const allPaths = await listAllSourceFiles(repoDir);
+        const sources: SourceFile[] = [];
+        for (const p of allPaths) sources.push({ path: p, content: await readSource(repoDir, p) });
+        const tracked = (await simpleGit(repoDir).raw(['ls-files'])).split(/\r?\n/).filter(Boolean);
+        let report = runSecAudit(sources, tracked);
+        const lock = await fsp.readFile(path.join(repoDir, 'package-lock.json'), 'utf8').catch(() => null);
+        report.dependencies = await checkDependencies(lock);
+        const vulnDeps = report.dependencies?.length ?? 0;
+        // AI second opinion: dismiss false alarms using the code around each finding (never sees secrets)
+        if (hasGeminiKey() && report.items.some((it) => it.locations.length)) {
+          try {
+            log('ai', `${geminiModel()} bulguları çevresindeki koda bakarak gerçek mi yanlış alarm mı diye doğruluyor (gizli değerler maskelenip gönderilir)…`);
+            report = await reviewFindings(report, sources);
+            if (report.aiReview) {
+              log('ai', `Yapay zeka incelemesi: ${report.aiReview.checked} bulgu bakıldı, ${report.aiReview.falsePositives} yanlış alarm ayıklandı.`);
+            }
+          } catch (e) {
+            log('warn', `Yapay zeka doğrulaması yapılamadı (${errMsg(e)}); ham bulgular gösteriliyor.`);
+          }
+        }
+        if (!ctx.verified) {
+          report = restrictReport(report, { file: VERIFY_FILE, content: `canary-verify=${await verifyToken(ctx.repoUrl)}` });
+          log('info', `🛡️ Repo sahibi doğrulanmadı — kısıtlı rapor: dosya/satır/kod ve paket adları gizlendi (${VERIFY_FILE} ile açılır).`);
+        }
+        ctx.emit({ type: 'sec_audit', report });
+        const total = report.items.reduce((n, it) => n + it.count, 0);
+        log(
+          report.score >= 85 && !vulnDeps ? 'success' : 'warn',
+          `🛡️ Güvenlik skoru ${report.score}/100 — ${report.items.length} risk türü, ${total} konum, ${vulnDeps} açık bağımlılık (gizli değerler maskelendi)`,
+        );
+      } catch (e) {
+        log('warn', `Güvenlik taraması yapılamadı (${errMsg(e)}).`);
       }
     }
     checkAbort();

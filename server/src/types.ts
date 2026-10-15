@@ -83,6 +83,7 @@ export type ScanEvent =
   | { type: 'step'; flowId: string; stepId: string; status: StepStatus; screenshot?: string; pageUrl?: string }
   | { type: 'test_result'; flowId: string; status: 'passed' | 'failed'; durationMs: number; failure?: Failure; healed?: Healing[] }
   | { type: 'tr_audit'; report: TrAuditReport }
+  | { type: 'sec_audit'; report: SecAuditReport }
   | { type: 'done'; summary: ScanSummary };
 
 export const VIEWS: View[] = [
@@ -119,6 +120,37 @@ export interface TrAuditReport {
   score: number;
   filesScanned: number;
   items: TrAuditItem[];
+}
+
+/* ---- Güvenlik Tarayıcısı (pasif, statik analiz — canlı sisteme saldırı yapmaz) ---- */
+export interface SecAuditItem {
+  id: string;
+  severity: TrSeverity;
+  title: string;
+  /** CWE reference, e.g. "CWE-79" */
+  cwe: string;
+  why: string;
+  fix: string;
+  count: number;
+  /** secrets are masked before they get here; verdict/reason are set by the AI review (when it ran) */
+  locations: { file: string; line: number; text: string; verdict?: 'real' | 'false_positive' | 'unsure'; reason?: string }[];
+}
+
+export interface SecAuditReport {
+  /** 0–100, higher is better */
+  score: number;
+  filesScanned: number;
+  items: SecAuditItem[];
+  /** known-vulnerable dependencies (OSV.dev); undefined = lookup was not possible */
+  dependencies?: { name: string; version: string; ids: string[] }[];
+  /** AI second opinion on the findings (absent = review did not run) */
+  aiReview?: { checked: number; falsePositives: number; model: string };
+  /** true = repo owner proved control (.canary-verify); false = restricted report (no files/lines/code/package names) */
+  verified: boolean;
+  /** only when unverified: how the owner can unlock the full report */
+  verify?: { file: string; content: string };
+  /** only when restricted: number of vulnerable dependencies (names hidden) */
+  dependencyCount?: number;
 }
 
 /** A test step that failed, was rewritten against the real page and then passed (self-healing). */

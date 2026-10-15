@@ -7,6 +7,7 @@ import type { SourceFile } from './repo.ts';
 import type { Flow, FlowStep, Profile } from './types.ts';
 import { browserContextOptions, testGuide } from './profile.ts';
 import { errMsg, withTimeout } from './util.ts';
+import { isBlockedHost } from './validate.ts';
 
 /**
  * Gemini writes the test as a structured list of Playwright actions per step.
@@ -33,9 +34,12 @@ const ACTION_KINDS: ActionKind[] = ['goto', 'click', 'fill', 'press', 'expectVis
 const ACTION_TIMEOUT = 8_000;
 const NAV_TIMEOUT = 15_000;
 
+/** Resolve against appUrl; anything that would leave appUrl's origin (AI-written absolute URLs) falls back to appUrl. */
 export function resolveUrl(appUrl: string, url: string): string {
   try {
-    return new URL(url, appUrl.endsWith('/') ? appUrl : `${appUrl}/`).toString();
+    const base = appUrl.endsWith('/') ? appUrl : `${appUrl}/`;
+    const resolved = new URL(url, base);
+    return resolved.origin === new URL(base).origin ? resolved.toString() : appUrl;
   } catch {
     return appUrl;
   }
@@ -198,6 +202,17 @@ export async function createPlaywrightRunner(appUrl: string, profile: Profile = 
   async function newTest() {
     if (page) await page.context().close().catch(() => {});
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...browserContextOptions(profile) });
+    // SSRF guard: abort any request (incl. redirects, subresources) that targets a private network.
+    await context.route('**/*', async (route) => {
+      try {
+        const u = new URL(route.request().url());
+        if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return route.continue();
+        if (!/^https?:$/.test(u.protocol) || (await isBlockedHost(u.hostname))) return route.abort('blockedbyclient');
+        return route.continue();
+      } catch {
+        return route.abort('blockedbyclient').catch(() => {});
+      }
+    });
     page = await context.newPage();
     page.setDefaultTimeout(ACTION_TIMEOUT);
   }
@@ -340,7 +355,10 @@ export function createHttpRunner(appUrl: string): StepRunner {
       const url = resolveUrl(appUrl, target);
       let res: Response;
       try {
-        res = await fetch(url, { signal: AbortSignal.timeout(NAV_TIMEOUT), redirect: 'follow' });
+        if (await isBlockedHost(new URL(url).hostname)) throw new Error('blocked: private address');
+        // Redirects are followed manually-by-refusal so they cannot hop into the internal network.
+        res = await fetch(url, { signal: AbortSignal.timeout(NAV_TIMEOUT), redirect: 'manual' });
+        if (res.status >= 300 && res.status < 400) return;
       } catch (e) {
         throw new Error(`GET ${url} → ${errMsg(e)}`);
       }

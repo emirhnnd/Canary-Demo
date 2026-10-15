@@ -3,12 +3,13 @@ import {
   ArrowRight, Bird, Check, ChevronRight, CircleDashed, FileCode2, FolderGit2, Globe, Loader2,
   Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare, X, AlertTriangle, MinusCircle, Zap,
 } from 'lucide-react';
-import type { Failure, Flow, FlowStatus, Healing, LogLevel, ScanEvent, StepStatus, Summary, TrAuditReport } from './types';
+import type { Failure, Flow, FlowStatus, Healing, LogLevel, ScanEvent, StepStatus, Summary, TrAuditReport, SecAuditReport } from './types';
 import { DEMO_APP_URL, DEMO_REPO } from './scenario';
 import { runScan, usingBackend } from './engine';
 import { MiniBrowser } from './components/MiniBrowser';
 import { FailureModal } from './components/FailureModal';
 import { ScoreRing, SEVERITY_TR, TrAuditModal, scoreGrade } from './components/TrAuditModal';
+import { SecAuditModal } from './components/SecAuditModal';
 
 const Github = ({ size = 16 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
@@ -33,6 +34,8 @@ interface State {
   shot: { img: string; url?: string } | null;
   /** Türkiye Uyum Tarayıcısı result (Canary TR) */
   audit: TrAuditReport | null;
+  /** Güvenlik Tarayıcısı result (only when the user confirmed authorization) */
+  secAudit: SecAuditReport | null;
   /** self-healed steps per flow */
   healed: Record<string, Healing[]>;
   failures: Failure[];
@@ -44,7 +47,7 @@ interface State {
 
 const initial: State = {
   repo: '', branch: 'main', totalFiles: 0, files: [], flows: [], flowStatus: {}, stepStatus: {},
-  durations: {}, logs: [], current: null, shot: null, audit: null, healed: {}, failures: [], summary: null, startedAt: 0, lastT: 0,
+  durations: {}, logs: [], current: null, shot: null, audit: null, secAudit: null, healed: {}, failures: [], summary: null, startedAt: 0, lastT: 0,
 };
 
 type Action = { type: 'reset' } | { type: 'event'; e: ScanEvent };
@@ -85,6 +88,8 @@ function apply(s: State, e: ScanEvent, t: number): State {
       };
     case 'tr_audit':
       return { ...s, audit: e.report };
+    case 'sec_audit':
+      return { ...s, secAudit: e.report };
     case 'done':
       return { ...s, summary: e.summary };
   }
@@ -164,6 +169,8 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, initial);
   const [modal, setModal] = useState<Failure | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [secOpen, setSecOpen] = useState(false);
+  const [secScan, setSecScan] = useState(false);
   const [now, setNow] = useState(Date.now());
   const abortRef = useRef<AbortController | null>(null);
 
@@ -180,8 +187,9 @@ export default function App() {
     dispatch({ type: 'reset' });
     setModal(null);
     setAuditOpen(false);
+    setSecOpen(false);
     setPhase('running');
-    runScan(repoInput.trim(), normalizeAppUrl(appInput), trProfile ? 'tr' : 'global', (e) => {
+    runScan(repoInput.trim(), normalizeAppUrl(appInput), trProfile ? 'tr' : 'global', secScan, (e) => {
       dispatch({ type: 'event', e });
       if (e.type === 'done') setPhase('done');
     }, ac.signal).catch((err) => {
@@ -211,6 +219,7 @@ export default function App() {
         repo={repoInput} setRepo={setRepoInput}
         appUrl={appInput} setAppUrl={setAppInput}
         tr={trProfile} setTr={setTrProfile}
+        sec={secScan} setSec={setSecScan}
         onStart={start}
       />
     );
@@ -222,6 +231,7 @@ export default function App() {
       <Stepper state={state} phase={phase} />
       <StatusStrip state={state} phase={phase} now={now} reasons={reasons} />
       {state.audit && <TrAuditStrip report={state.audit} onOpen={() => setAuditOpen(true)} />}
+      {state.secAudit && <SecAuditStrip report={state.secAudit} onOpen={() => setSecOpen(true)} />}
       <main className="run-grid">
         <FilePanel state={state} />
         <FlowPanel state={state} onOpenFailure={setModal} />
@@ -235,6 +245,7 @@ export default function App() {
       )}
       {modal && <FailureModal failure={modal} onClose={() => setModal(null)} />}
       {auditOpen && state.audit && <TrAuditModal report={state.audit} onClose={() => setAuditOpen(false)} />}
+      {secOpen && state.secAudit && <SecAuditModal report={state.secAudit} onClose={() => setSecOpen(false)} />}
     </div>
   );
 }
@@ -245,6 +256,7 @@ function Landing(props: {
   repo: string; setRepo: (v: string) => void;
   appUrl: string; setAppUrl: (v: string) => void;
   tr: boolean; setTr: (v: boolean) => void;
+  sec: boolean; setSec: (v: boolean) => void;
   onStart: () => void;
 }) {
   const [tried, setTried] = useState(false);
@@ -324,6 +336,13 @@ function Landing(props: {
               : 'Orijinal Canary davranışı: İngilizce tarayıcı ve genel kontroller'}
           </span>
         </button>
+        <label className="sec-consent">
+          <input type="checkbox" checked={props.sec} onChange={(e) => props.setSec(e.target.checked)} />
+          <span>
+            🛡️ <b>Güvenlik taraması</b> <i>(beta — geliştirme aşamasında)</i> ekle — yalnızca kaynak kodu okur (pasif), canlı sisteme saldırı/istek yapmaz.
+            Bu kodun <b>sahibi olduğumu veya test etme iznim olduğunu</b> onaylıyorum.
+          </span>
+        </label>
         {(showRepo || showApp) && (
           <div className="run-errors" role="alert">
             {showRepo && <div><AlertTriangle size={13} /> {repoErr}</div>}
@@ -452,6 +471,28 @@ function TrAuditStrip({ report, onOpen }: { report: TrAuditReport; onOpen: () =>
             {report.items.length
               ? bySev.map((x) => `${x.n} ${SEVERITY_TR[x.sv].toLocaleLowerCase('tr-TR')}`).join(' · ') + ' risk · ' + report.items.map((it) => it.title).slice(0, 2).join(' · ')
               : 'Türkiye\'ye özel risk bulunamadı'}
+          </span>
+        </div>
+        <span className="tr-strip-cta">Raporu aç <ArrowRight size={13} /></span>
+      </button>
+    </div>
+  );
+}
+
+/** Güvenlik skoru strip, shown once the (opt-in) passive security audit is done. */
+function SecAuditStrip({ report, onOpen }: { report: SecAuditReport; onOpen: () => void }) {
+  const grade = scoreGrade(report.score);
+  const deps = report.dependencies?.length ?? report.dependencyCount ?? 0;
+  return (
+    <div className="status-strip">
+      <button className={`tr-strip ${grade.cls}`} onClick={onOpen}>
+        <ScoreRing score={report.score} size={44} />
+        <div className="tr-strip-text">
+          <b>🛡️ Güvenlik skoru {report.score}/100 · {grade.label} · beta</b>
+          <span>
+            {report.items.length || deps
+              ? `${report.items.length} risk türü · ${deps} açık bağımlılık · ` + report.items.map((it) => it.title).slice(0, 2).join(' · ')
+              : 'Bilinen bir güvenlik riski bulunamadı'}
           </span>
         </div>
         <span className="tr-strip-cta">Raporu aç <ArrowRight size={13} /></span>

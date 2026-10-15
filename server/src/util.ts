@@ -2,9 +2,13 @@ import type { LogLevel, ScanEvent } from './types.ts';
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** First line of an error, with local file paths and URL credentials removed (it is streamed to the client). */
 export function errMsg(e: unknown): string {
-  if (e instanceof Error) return e.message.split('\n')[0];
-  return String(e);
+  const raw = e instanceof Error ? e.message.split('\n')[0] : String(e);
+  return raw
+    .replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, '//***@')
+    .replace(/(?<![\w])[A-Za-z]:[\\/](?!\/)[^\s'"]+/g, '<path>')
+    .replace(/(^|[\s'"(])\/(?:[\w.-]+\/)+[\w.-]+/g, '$1<path>');
 }
 
 export async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -33,6 +37,10 @@ export interface ScanContext {
   appUrl: string;
   /** 'tr' = Canary TR: Turkish browser locale, Turkey-specific checks, Turkish AI output */
   profile: 'tr' | 'global';
+  /** passive security audit; only set when the requester confirmed they are authorized */
+  security: boolean;
+  /** repo owner proved control via .canary-verify: full security report; otherwise restricted */
+  verified: boolean;
   emit: (event: ScanEvent) => void;
   log: (level: LogLevel, message: string) => void;
   isAborted: () => boolean;

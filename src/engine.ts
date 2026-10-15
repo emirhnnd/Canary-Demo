@@ -118,14 +118,17 @@ async function runMock(repo: string, emit: (e: ScanEvent) => void, signal: Abort
 }
 
 /** Real backend: POST /api/scans → { scanId }, then SSE stream GET /api/scans/:id/events */
-async function runBackend(repo: string, appUrl: string, profile: 'tr' | 'global', emit: (e: ScanEvent) => void, signal: AbortSignal) {
+async function runBackend(repo: string, appUrl: string, profile: 'tr' | 'global', security: boolean, emit: (e: ScanEvent) => void, signal: AbortSignal) {
   const res = await fetch(`${API_URL}/api/scans`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoUrl: repo, appUrl, profile }),
+    body: JSON.stringify({ repoUrl: repo, appUrl, profile, ...(security ? { security: true, authorized: true } : {}) }),
     signal,
   });
-  if (!res.ok) throw new Error(`Backend error ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.json().then((j: { error?: string }) => j.error).catch(() => undefined);
+    throw new Error(detail ?? `Backend error ${res.status}`);
+  }
   const { scanId } = (await res.json()) as { scanId: string };
 
   await new Promise<void>((resolve, reject) => {
@@ -153,12 +156,13 @@ export async function runScan(
   repo: string,
   appUrl: string,
   profile: 'tr' | 'global',
+  security: boolean,
   emit: (e: ScanEvent) => void,
   signal: AbortSignal,
 ) {
   if (!API_URL || params.get('mock') === '1') return runMock(repo, emit, signal);
   try {
-    await runBackend(repo, appUrl, profile, emit, signal);
+    await runBackend(repo, appUrl, profile, security, emit, signal);
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw err;
     // Stage safety net: if the backend dies, fall back to the scripted run.
