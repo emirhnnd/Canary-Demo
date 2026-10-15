@@ -88,7 +88,7 @@ export async function reviewFindings(report: SecAuditReport, files: SourceLike[]
 
   const items = [...report.items]
     // secrets are never sent out; "something is missing" findings can't be judged from a few lines
-    .filter((it) => !['sec-secret', 'sec-tracked-secret-file', 'sec-helmet', 'sec-csrf'].includes(it.id))
+    .filter((it) => !['sec-secret', 'sec-tracked-secret-file', 'sec-history-secret', 'sec-helmet', 'sec-csrf'].includes(it.id))
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
   for (const item of items) {
     for (const loc of item.locations) {

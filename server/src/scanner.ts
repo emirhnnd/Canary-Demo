@@ -6,6 +6,7 @@ import { auditHint, runTrAudit } from './trAudit.ts';
 import { describeActions, healStep } from './heal.ts';
 import { checkDependencies, restrictReport, runSecAudit } from './secAudit.ts';
 import { VERIFY_FILE, verifyToken } from './verify.ts';
+import { scanGitHistory, withHistory, HISTORY_DEPTH } from './gitHistory.ts';
 import { reviewFindings } from './secReview.ts';
 import { simpleGit } from 'simple-git';
 import { promises as fsp } from 'node:fs';
@@ -114,6 +115,15 @@ export async function runRealScan(ctx: ScanContext): Promise<void> {
           } catch (e) {
             log('warn', `Yapay zeka doğrulaması yapılamadı (${errMsg(e)}); ham bulgular gösteriliyor.`);
           }
+        }
+        // git history (last N commits): secrets deleted from files but still readable in old commits
+        try {
+          log('info', `🛡️ Git geçmişi (son ${HISTORY_DEPTH} commit) silinmiş gizli anahtarlar için okunuyor (değerler gösterilmez)…`);
+          const histItem = await scanGitHistory(repoDir, branch);
+          report = withHistory(report, histItem);
+          if (histItem) log('warn', `🛡️ Geçmişte ${histItem.count} silinmiş gizli anahtar bulundu — iptal edip yenileyin.`);
+        } catch {
+          /* history is optional */
         }
         if (!ctx.verified) {
           report = restrictReport(report, { file: VERIFY_FILE, content: `canary-verify=${await verifyToken(ctx.repoUrl)}` });
