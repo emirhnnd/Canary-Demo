@@ -22,6 +22,8 @@ interface Rule {
   why: string;
   fix: string;
   test: (line: string) => boolean;
+  /** same sink, but fed by a variable that holds req.body/query/params (see taint tracking) */
+  taint?: (line: string, v: string) => boolean;
   /** secrets: mask the match in the reported line */
   mask?: RegExp;
 }
@@ -101,6 +103,8 @@ const RULES: Rule[] = [
     test: (l) =>
       /\$where\b/.test(l) ||
       /\.(find|findOne|findOneAnd\w+|update\w*|delete\w+|remove|count\w*|aggregate)\s*\(\s*(\{[^}]*)?(?<!String\(|Number\(|parseInt\(|parseFloat\(|ObjectId\(|Boolean\()req\.(body|query|params)\b/.test(l),
+    taint: (l, v) =>
+      new RegExp(`\\.(find|findOne|findOneAnd\\w+|update\\w*|delete\\w+|remove|count\\w*|aggregate)\\s*\\(\\s*(\\{[^}]*)?(?<!String\\(|Number\\(|parseInt\\(|parseFloat\\(|ObjectId\\(|Boolean\\()\\b${v}\\b(?!\\s*\\()`).test(l),
   },
   {
     id: 'sec-open-redirect',
@@ -112,6 +116,7 @@ const RULES: Rule[] = [
     test: (l) =>
       (/res\.redirect\s*\([^)]*req\.(query|body|params)\b/.test(l) && !/res\.redirect\s*\(\s*(['"`])\/(?!\/)/.test(l)) ||
       /(window\.)?location(\.href)?\s*=(?!=)\s*[^;]*(location\.search|searchParams|\.get\(\s*['"](next|redirect|redirect_?url|return_?url|url)['"]\s*\))/.test(l),
+    taint: (l, v) => new RegExp(`res\\.redirect\\s*\\([^)]*\\b${v}\\b`).test(l) && !/res\.redirect\s*\(\s*(['"`])\/(?!\/)/.test(l),
   },
   {
     id: 'sec-cookie-flags',
@@ -199,6 +204,24 @@ const RULES: Rule[] = [
 /** Test/fixture code holds deliberately bad snippets; only leaked secrets matter there. */
 const TEST_PATH = /(^|\/)(tests?|__tests__|e2e|fixtures?|__mocks__|cypress)\/|\.(test|spec)\.[cm]?[jt]sx?$/i;
 
+const TAINT_WINDOW = 50;
+const SAFE_WRAP = /^(String|Number|parseInt|parseFloat|Boolean|ObjectId|encodeURIComponent)\s*\(/;
+
+/** Variable names that receive req.body/query/params on this line (not wrapped by a converter). */
+function taintedAssignments(line: string): string[] {
+  const m = line.match(/^\s*(?:const|let|var)\s+(\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*(.+)$/);
+  if (!m) return [];
+  const rhs = m[2].trim();
+  if (SAFE_WRAP.test(rhs) || !/^req\.(body|query|params)\b/.test(rhs)) return [];
+  if (m[1].startsWith('{')) {
+    // const { a, b: c = 1 } = req.body  -> a, c
+    return m[1].slice(1, -1).split(',').map((p) => p.split('=')[0].split(':').pop()!.trim()).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
+  }
+  // `const x = req.body.a.length` etc. is still a value derived from input; `.length`/comparison is not a string
+  if (/\.length\b|[=!<>]=|\?/.test(rhs)) return [];
+  return [m[1]];
+}
+
 function isComment(line: string): boolean {
   const t = line.trim();
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#');
@@ -242,11 +265,26 @@ export function runSecAudit(files: SourceLike[], repoFileList: string[] = []): S
       if (/(^|\/)(secAudit|trAudit)\.[jt]s$/.test(f.path)) continue; // the scanner's own rule text
       if (rule.id !== 'sec-secret' && TEST_PATH.test(f.path)) continue;
       const lines = f.content.split(/\r?\n/);
+      const tainted = new Map<string, number>(); // variable -> last line it is still considered tainted
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.length > 500 || isComment(line)) continue;
         if (rule.id === 'sec-secret' && /(process\.env|import\.meta\.env|your[_-]?(key|api)|example|placeholder|xxx)/i.test(line)) continue;
-        if (!rule.test(line)) continue;
+        let hit = rule.test(line);
+        if (rule.taint) {
+          // a new top-level function/handler starts: earlier variables are out of scope
+          if (/^\S.*(\bfunction\b|=>)/.test(line)) tainted.clear();
+          for (const [v, end] of [...tainted]) {
+            if (end < i) { tainted.delete(v); continue; }
+            const name = v.replace(/\$/g, '\\$');
+            if (!new RegExp(`(^|[^\\w$])${name}(?![\\w$])`).test(line)) continue;
+            // validated or reassigned: treat as sanitized (fewer false alarms over catching every case)
+            if (new RegExp(`(^|[^\\w$.])${name}\\s*=[^=]`).test(line) || /startsWith|includes|indexOf|\.test\(|\.match\(|allow|whitelist|valid|sanitiz|isSafe|new URL/i.test(line)) tainted.delete(v);
+            else if (!hit && rule.taint(line, name)) hit = true;
+          }
+          for (const v of taintedAssignments(line)) tainted.set(v, i + TAINT_WINDOW);
+        }
+        if (!hit) continue;
         count++;
         if (locations.length < MAX_LOCATIONS) locations.push({ file: f.path, line: i + 1, text: maskLine(line, ruleById.get(rule.id)!) });
       }
