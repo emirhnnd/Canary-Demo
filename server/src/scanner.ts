@@ -6,6 +6,7 @@ import { auditHint, runTrAudit } from './trAudit.ts';
 import { describeActions, healStep } from './heal.ts';
 import { checkDependencies, restrictReport, runSecAudit } from './secAudit.ts';
 import { VERIFY_FILE, verifyToken } from './verify.ts';
+import { mergeSemgrep, runSemgrep } from './semgrep.ts';
 import { scanGitHistory, withHistory, HISTORY_DEPTH } from './gitHistory.ts';
 import { reviewFindings } from './secReview.ts';
 import { simpleGit } from 'simple-git';
@@ -101,6 +102,12 @@ export async function runRealScan(ctx: ScanContext): Promise<void> {
         for (const p of allPaths) sources.push({ path: p, content: await readSource(repoDir, p) });
         const tracked = (await simpleGit(repoDir).raw(['ls-files'])).split(/\r?\n/).filter(Boolean);
         let report = runSecAudit(sources, tracked);
+        // optional: Semgrep, only if installed (silently skipped otherwise)
+        const semgrepItems = await runSemgrep(repoDir);
+        if (semgrepItems) {
+          report = mergeSemgrep(report, semgrepItems);
+          log('info', `🛡️ Semgrep bulundu ve çalıştı — ${semgrepItems.length} kural sonucu rapora eklendi.`);
+        }
         const lock = await fsp.readFile(path.join(repoDir, 'package-lock.json'), 'utf8').catch(() => null);
         report.dependencies = await checkDependencies(lock);
         const vulnDeps = report.dependencies?.length ?? 0;
